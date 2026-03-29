@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"log"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/projectdiscovery/goflags"
 	"github.com/projectdiscovery/retryablehttp-go"
 )
 
@@ -41,40 +41,20 @@ type httpClientConfig struct {
 	maxRedirs    int
 }
 
-// command line args
-type config struct {
-	outdir      string     // output directory
-	urls        urlList    // sourcemap urls (can be multiple)
-	jsurls      urlList    // javascript urls (can be multiple)
-	proxy       string     // upstream proxy server
-	insecure    bool       // skip tls verification
-	headers     headerList // additional user-supplied http headers
-	timeout     int        // request timeout in seconds
-	retries     int        // number of retries
-	concurrency int        // concurrent requests
-	ratelimit   int        // requests per second
-}
-
-type urlList []string
-
-func (u *urlList) String() string {
-	return strings.Join(*u, ",")
-}
-
-func (u *urlList) Set(value string) error {
-	*u = append(*u, value)
-	return nil
-}
-
-type headerList []string
-
-func (h *headerList) String() string {
-	return ""
-}
-
-func (h *headerList) Set(value string) error {
-	*h = append(*h, value)
-	return nil
+// options represents command line options
+type options struct {
+	Output      string              `flag:"output,o" validate:"required" description:"Output directory (required)"`
+	URLs        goflags.StringSlice `flag:"url,u" description:"Sourcemap URL/path (comma-separated or multiple flags)"`
+	JSURLs      goflags.StringSlice `flag:"jsurl,j" description:"JavaScript URL (comma-separated or multiple flags)"`
+	Proxy       string              `flag:"proxy,p" description:"Proxy URL (http/socks5)"`
+	Timeout     int                 `flag:"timeout,t" default:"30" description:"Request timeout in seconds"`
+	Retries     int                 `flag:"retries,r" default:"3" description:"Number of retries for failed requests"`
+	RateLimit   int                 `flag:"rate-limit,rl" default:"0" description:"Requests per second (0 = unlimited)"`
+	Insecure    bool                `flag:"insecure,k" description:"Skip TLS certificate verification"`
+	Headers     goflags.StringSlice `flag:"header,H" description:"HTTP header (comma-separated or multiple flags)"`
+	Concurrency int                 `flag:"concurrency,c" default:"5" description:"Concurrent requests"`
+	Silent      bool                `flag:"silent,s" description:"Silent mode (errors only)"`
+	Verbose     bool                `flag:"verbose,v" description:"Verbose mode"`
 }
 
 // newHTTPClient creates a configured retryable HTTP client
@@ -391,51 +371,73 @@ func cleanWindows(p string) string {
 }
 
 func main() {
-	var conf config
-	var err error
+	opts := &options{}
 
-	flag.StringVar(&conf.outdir, "output", "", "Source file output directory - REQUIRED")
-	flag.Var(&conf.urls, "url", "URL or path to the Sourcemap file - can be specified multiple times")
-	flag.Var(&conf.jsurls, "jsurl", "URL to JavaScript file - can be specified multiple times")
-	flag.StringVar(&conf.proxy, "proxy", "", "Proxy URL")
-	flag.IntVar(&conf.timeout, "timeout", 30, "Request timeout in seconds")
-	flag.IntVar(&conf.retries, "retries", 3, "Number of retries for failed requests")
-	flag.IntVar(&conf.concurrency, "concurrency", 5, "Number of concurrent requests")
-	flag.IntVar(&conf.ratelimit, "rate-limit", 0, "Requests per second (0 = unlimited)")
-	help := flag.Bool("help", false, "Show help")
-	flag.BoolVar(&conf.insecure, "insecure", false, "Ignore invalid TLS certificates")
-	flag.Var(&conf.headers, "header", "A header to send with the request, similar to curl's -H. Can be set multiple times")
-	flag.Parse()
+	flagSet := goflags.NewFlagSet()
+	flagSet.SetDescription("Extract source code from JavaScript sourcemaps")
 
-	if *help || (len(conf.urls) == 0 && len(conf.jsurls) == 0) || conf.outdir == "" {
-		flag.Usage()
-		return
+	flagSet.CreateGroup("input", "Input",
+		flagSet.StringSliceVarP(&opts.URLs, "url", "u", nil, "sourcemap URL/path (comma-separated or multiple flags)", goflags.CommaSeparatedStringSliceOptions),
+		flagSet.StringSliceVarP(&opts.JSURLs, "jsurl", "j", nil, "javascript URL (comma-separated or multiple flags)", goflags.CommaSeparatedStringSliceOptions),
+	)
+
+	flagSet.CreateGroup("output", "Output",
+		flagSet.StringVarP(&opts.Output, "output", "o", "", "output directory (required)"),
+	)
+
+	flagSet.CreateGroup("config", "Configuration",
+		flagSet.StringVarP(&opts.Proxy, "proxy", "p", "", "proxy URL (http/socks5)"),
+		flagSet.IntVarP(&opts.Timeout, "timeout", "t", 30, "request timeout in seconds"),
+		flagSet.IntVarP(&opts.Retries, "retries", "r", 3, "number of retries"),
+		flagSet.IntVarP(&opts.RateLimit, "rate-limit", "rl", 0, "requests per second (0 = unlimited)"),
+		flagSet.IntVarP(&opts.Concurrency, "concurrency", "c", 5, "concurrent requests"),
+		flagSet.BoolVarP(&opts.Insecure, "insecure", "k", false, "skip TLS verification"),
+		flagSet.StringSliceVarP(&opts.Headers, "header", "H", nil, "HTTP header (comma-separated or multiple flags)", goflags.CommaSeparatedStringSliceOptions),
+	)
+
+	flagSet.CreateGroup("debug", "Debug",
+		flagSet.BoolVarP(&opts.Silent, "silent", "s", false, "silent mode (errors only)"),
+		flagSet.BoolVarP(&opts.Verbose, "verbose", "v", false, "verbose mode"),
+	)
+
+	if err := flagSet.Parse(); err != nil {
+		log.Fatalf("Error parsing flags: %s", err)
 	}
 
-	if len(conf.jsurls) > 0 && len(conf.urls) > 0 {
+	// Validation
+	if opts.Output == "" {
+		log.Fatal("output directory is required")
+	}
+
+	if len(opts.URLs) == 0 && len(opts.JSURLs) == 0 {
+		log.Fatal("at least one -url or -jsurl is required")
+	}
+
+	if len(opts.JSURLs) > 0 && len(opts.URLs) > 0 {
 		log.Println("[!] Both -jsurl and -url supplied - processing both")
 	}
 
 	// Parse proxy URL
 	var proxyURL *url.URL
-	if conf.proxy != "" {
-		proxyURL, err = url.Parse(conf.proxy)
+	var err error
+	if opts.Proxy != "" {
+		proxyURL, err = url.Parse(opts.Proxy)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 
 	// Parse headers
-	headerMap := parseHeaders(conf.headers)
-	if len(headerMap) > 0 {
+	headerMap := parseHeaders(opts.Headers)
+	if len(headerMap) > 0 && opts.Verbose {
 		log.Printf("[+] Using %d custom header(s)\n", len(headerMap))
 	}
 
 	// Create HTTP client config
 	httpCfg := httpClientConfig{
-		timeout:      time.Duration(conf.timeout) * time.Second,
-		retries:      conf.retries,
-		insecure:     conf.insecure,
+		timeout:      time.Duration(opts.Timeout) * time.Second,
+		retries:      opts.Retries,
+		insecure:     opts.Insecure,
 		proxy:        proxyURL,
 		headers:      headerMap,
 		followRedirs: true,
@@ -445,8 +447,10 @@ func main() {
 	// Create retryable HTTP client
 	client := newHTTPClient(httpCfg)
 
-	log.Printf("[+] HTTP Client configured: timeout=%ds, retries=%d, insecure=%v\n",
-		conf.timeout, conf.retries, conf.insecure)
+	if opts.Verbose {
+		log.Printf("[+] HTTP Client configured: timeout=%ds, retries=%d, insecure=%v\n",
+			opts.Timeout, opts.Retries, opts.Insecure)
+	}
 
 	totalProcessed := 0
 	totalFailed := 0
@@ -454,26 +458,30 @@ func main() {
 
 	// Rate limiter setup
 	var rateLimiter <-chan time.Time
-	if conf.ratelimit > 0 {
-		log.Printf("[+] Rate limit: %d requests/second\n", conf.ratelimit)
-		ticker := time.NewTicker(time.Second / time.Duration(conf.ratelimit))
+	if opts.RateLimit > 0 {
+		if opts.Verbose {
+			log.Printf("[+] Rate limit: %d requests/second\n", opts.RateLimit)
+		}
+		ticker := time.NewTicker(time.Second / time.Duration(opts.RateLimit))
 		defer ticker.Stop()
 		rateLimiter = ticker.C
 	}
 
 	// Process sourcemap URLs
-	for idx, sourceURL := range conf.urls {
+	for idx, sourceURL := range opts.URLs {
 		// Rate limiting
 		if rateLimiter != nil {
 			<-rateLimiter
 		}
 
-		log.Printf("\n[*] Processing sourcemap %d/%d: %s\n", idx+1, len(conf.urls), sourceURL)
+		if !opts.Silent {
+			log.Printf("\n[*] Processing sourcemap %d/%d: %s\n", idx+1, len(opts.URLs), sourceURL)
+		}
 
 		// Create subdirectory for this sourcemap if multiple URLs
-		outputDir := conf.outdir
-		if len(conf.urls) > 1 || len(conf.jsurls) > 0 {
-			outputDir = filepath.Join(conf.outdir, filepath.Clean(strings.ReplaceAll(filepath.Base(sourceURL), ".", "_")))
+		outputDir := opts.Output
+		if len(opts.URLs) > 1 || len(opts.JSURLs) > 0 {
+			outputDir = filepath.Join(opts.Output, filepath.Clean(strings.ReplaceAll(filepath.Base(sourceURL), ".", "_")))
 		}
 
 		sm, err := getSourceMap(sourceURL, client, headerMap)
@@ -495,18 +503,20 @@ func main() {
 	}
 
 	// Process JavaScript URLs
-	for idx, jsURL := range conf.jsurls {
+	for idx, jsURL := range opts.JSURLs {
 		// Rate limiting
 		if rateLimiter != nil {
 			<-rateLimiter
 		}
 
-		log.Printf("\n[*] Processing JavaScript %d/%d: %s\n", idx+1, len(conf.jsurls), jsURL)
+		if !opts.Silent {
+			log.Printf("\n[*] Processing JavaScript %d/%d: %s\n", idx+1, len(opts.JSURLs), jsURL)
+		}
 
 		// Create subdirectory for this sourcemap if multiple URLs
-		outputDir := conf.outdir
-		if len(conf.jsurls) > 1 || len(conf.urls) > 0 {
-			outputDir = filepath.Join(conf.outdir, filepath.Clean(strings.ReplaceAll(filepath.Base(jsURL), ".", "_")))
+		outputDir := opts.Output
+		if len(opts.JSURLs) > 1 || len(opts.URLs) > 0 {
+			outputDir = filepath.Join(opts.Output, filepath.Clean(strings.ReplaceAll(filepath.Base(jsURL), ".", "_")))
 		}
 
 		sm, err := getSourceMapFromJS(jsURL, client, headerMap)
@@ -527,8 +537,10 @@ func main() {
 		totalSources++
 	}
 
-	log.Println("\n" + strings.Repeat("=", 60))
-	log.Printf("[+] SUMMARY: Processed %d sourcemaps successfully, %d failed", totalSources, totalFailed)
-	log.Printf("[+] Total source files extracted: %d", totalProcessed)
-	log.Println("[+] Done")
+	if !opts.Silent {
+		log.Println("\n" + strings.Repeat("=", 60))
+		log.Printf("[+] SUMMARY: Processed %d sourcemaps successfully, %d failed", totalSources, totalFailed)
+		log.Printf("[+] Total source files extracted: %d", totalProcessed)
+		log.Println("[+] Done")
+	}
 }
