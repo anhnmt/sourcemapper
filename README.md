@@ -9,13 +9,13 @@ An article explaining its purpose is available here: [https://pulsesecurity.co.n
 If you have a recent version of Go installed:
 
 ```bash
-go install github.com/denandz/sourcemapper@latest
+go install github.com/anhnmt/sourcemapper@latest
 ```
 
 Otherwise you can clone and build:
 
 ```bash
-git clone https://github.com/denandz/sourcemapper
+git clone https://github.com/anhnmt/sourcemapper
 cd sourcemapper
 go get
 go build

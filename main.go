@@ -334,6 +334,19 @@ func main() {
 		log.Fatal("No source content found.")
 	}
 
+	// Determine how many entries we can safely process
+	maxEntries := len(sm.Sources)
+	if len(sm.SourcesContent) < maxEntries {
+		log.Printf("[!] WARNING: sourcesContent array (%d entries) is shorter than sources array (%d entries).",
+			len(sm.SourcesContent), len(sm.Sources))
+		log.Printf("[!] Only processing the first %d entries that have content available.", len(sm.SourcesContent))
+		maxEntries = len(sm.SourcesContent)
+	} else if len(sm.SourcesContent) > len(sm.Sources) {
+		log.Printf("[!] WARNING: sourcesContent array (%d entries) is longer than sources array (%d entries).",
+			len(sm.SourcesContent), len(sm.Sources))
+		log.Printf("[!] Extra content entries will be ignored.")
+	}
+
 	if sm.Version != 3 {
 		log.Println("[!] Sourcemap is not version 3. This is untested!")
 	}
@@ -345,20 +358,29 @@ func main() {
 		}
 	}
 
-	for i, sourcePath := range sm.Sources {
+	processedCount := 0
+	for i := 0; i < maxEntries; i++ {
+		sourcePath := sm.Sources[i]
 		sourcePath = "/" + sourcePath // path.Clean will ignore a leading '..', must be a '/..'
+
 		// If on windows, clean the sourcepath.
 		if runtime.GOOS == "windows" {
 			sourcePath = cleanWindows(sourcePath)
 		}
 
 		// Use filepath.Join. https://parsiya.net/blog/2019-03-09-path.join-considered-harmful/
-		scriptPath, scriptData := filepath.Join(conf.outdir, filepath.Clean(sourcePath)), sm.SourcesContent[i]
+		scriptPath := filepath.Join(conf.outdir, filepath.Clean(sourcePath))
+		scriptData := sm.SourcesContent[i]
+
 		err := writeFile(scriptPath, scriptData)
 		if err != nil {
-			log.Printf("Error writing %s file: %s", scriptPath, err)
+			log.Printf("[!] Error writing %s file: %s", scriptPath, err)
+		} else {
+			processedCount++
 		}
 	}
+
+	log.Printf("[+] Successfully processed %d out of %d source entries.", processedCount, len(sm.Sources))
 
 	log.Println("[+] Done")
 }
