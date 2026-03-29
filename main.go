@@ -30,21 +30,32 @@ type sourceMap struct {
 // command line args
 type config struct {
 	outdir   string     // output directory
-	url      string     // sourcemap url
-	jsurl    string     // javascript url
+	urls     urlList    // sourcemap urls (can be multiple)
+	jsurls   urlList    // javascript urls (can be multiple)
 	proxy    string     // upstream proxy server
 	insecure bool       // skip tls verification
 	headers  headerList // additional user-supplied http headers
 }
 
+type urlList []string
+
+func (u *urlList) String() string {
+	return strings.Join(*u, ",")
+}
+
+func (u *urlList) Set(value string) error {
+	*u = append(*u, value)
+	return nil
+}
+
 type headerList []string
 
-func (i *headerList) String() string {
+func (h *headerList) String() string {
 	return ""
 }
 
-func (i *headerList) Set(value string) error {
-	*i = append(*i, value)
+func (h *headerList) Set(value string) error {
+	*h = append(*h, value)
 	return nil
 }
 
@@ -271,67 +282,16 @@ func writeFile(p string, content string) error {
 	return os.WriteFile(p, []byte(content), 0600)
 }
 
-// cleanWindows replaces the illegal characters from a path with `-`.
-func cleanWindows(p string) string {
-	m1 := regexp.MustCompile(`[?%*|:"<>]`)
-	return m1.ReplaceAllString(p, "")
-}
-
-func main() {
-	var proxyURL url.URL
-	var conf config
-	var err error
-
-	flag.StringVar(&conf.outdir, "output", "", "Source file output directory - REQUIRED")
-	flag.StringVar(&conf.url, "url", "", "URL or path to the Sourcemap file - cannot be used with jsurl")
-	flag.StringVar(&conf.jsurl, "jsurl", "", "URL to JavaScript file - cannot be used with url")
-	flag.StringVar(&conf.proxy, "proxy", "", "Proxy URL")
-	help := flag.Bool("help", false, "Show help")
-	flag.BoolVar(&conf.insecure, "insecure", false, "Ignore invalid TLS certificates")
-	flag.Var(&conf.headers, "header", "A header to send with the request, similar to curl's -H. Can be set multiple times, EG: \"./sourcemapper --header \"Cookie: session=bar\" --header \"Authorization: blerp\"")
-	flag.Parse()
-
-	if *help || (conf.url == "" && conf.jsurl == "") || conf.outdir == "" {
-		flag.Usage()
-		return
-	}
-
-	if conf.jsurl != "" && conf.url != "" {
-		log.Println("[!] Both -jsurl and -url supplied")
-		flag.Usage()
-		return
-	}
-
-	if conf.proxy != "" {
-		p, err := url.Parse(conf.proxy)
-		if err != nil {
-			log.Fatal(err)
-		}
-		proxyURL = *p
-	}
-
-	var sm sourceMap
-
-	// these need to just take the conf object
-	if conf.url != "" {
-		if sm, err = getSourceMap(conf.url, conf.headers, conf.insecure, proxyURL); err != nil {
-			log.Fatal(err)
-		}
-	} else if conf.jsurl != "" {
-		if sm, err = getSourceMapFromJS(conf.jsurl, conf.headers, conf.insecure, proxyURL); err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	// everything below needs to go into its own function
+// processSourceMap extracts and writes source files from a sourcemap
+func processSourceMap(sm sourceMap, outdir string) (int, error) {
 	log.Printf("[+] Retrieved Sourcemap with version %d, containing %d entries.\n", sm.Version, len(sm.Sources))
 
 	if len(sm.Sources) == 0 {
-		log.Fatal("No sources found.")
+		return 0, errors.New("no sources found")
 	}
 
 	if len(sm.SourcesContent) == 0 {
-		log.Fatal("No source content found.")
+		return 0, errors.New("no source content found")
 	}
 
 	// Determine how many entries we can safely process
@@ -351,10 +311,10 @@ func main() {
 		log.Println("[!] Sourcemap is not version 3. This is untested!")
 	}
 
-	if _, err := os.Stat(conf.outdir); os.IsNotExist(err) {
-		err = os.Mkdir(conf.outdir, 0700)
+	if _, err := os.Stat(outdir); os.IsNotExist(err) {
+		err = os.Mkdir(outdir, 0700)
 		if err != nil {
-			log.Fatal(err)
+			return 0, err
 		}
 	}
 
@@ -369,7 +329,7 @@ func main() {
 		}
 
 		// Use filepath.Join. https://parsiya.net/blog/2019-03-09-path.join-considered-harmful/
-		scriptPath := filepath.Join(conf.outdir, filepath.Clean(sourcePath))
+		scriptPath := filepath.Join(outdir, filepath.Clean(sourcePath))
 		scriptData := sm.SourcesContent[i]
 
 		err := writeFile(scriptPath, scriptData)
@@ -381,6 +341,107 @@ func main() {
 	}
 
 	log.Printf("[+] Successfully processed %d out of %d source entries.", processedCount, len(sm.Sources))
+	return processedCount, nil
+}
 
+// cleanWindows replaces the illegal characters from a path with `-`.
+func cleanWindows(p string) string {
+	m1 := regexp.MustCompile(`[?%*|:"<>]`)
+	return m1.ReplaceAllString(p, "")
+}
+
+func main() {
+	var proxyURL url.URL
+	var conf config
+
+	flag.StringVar(&conf.outdir, "output", "", "Source file output directory - REQUIRED")
+	flag.Var(&conf.urls, "url", "URL or path to the Sourcemap file - can be specified multiple times")
+	flag.Var(&conf.jsurls, "jsurl", "URL to JavaScript file - can be specified multiple times")
+	flag.StringVar(&conf.proxy, "proxy", "", "Proxy URL")
+	help := flag.Bool("help", false, "Show help")
+	flag.BoolVar(&conf.insecure, "insecure", false, "Ignore invalid TLS certificates")
+	flag.Var(&conf.headers, "header", "A header to send with the request, similar to curl's -H. Can be set multiple times, EG: \"./sourcemapper --header \"Cookie: session=bar\" --header \"Authorization: blerp\"")
+	flag.Parse()
+
+	if *help || (len(conf.urls) == 0 && len(conf.jsurls) == 0) || conf.outdir == "" {
+		flag.Usage()
+		return
+	}
+
+	if len(conf.jsurls) > 0 && len(conf.urls) > 0 {
+		log.Println("[!] Both -jsurl and -url supplied - processing both")
+	}
+
+	if conf.proxy != "" {
+		p, err := url.Parse(conf.proxy)
+		if err != nil {
+			log.Fatal(err)
+		}
+		proxyURL = *p
+	}
+
+	totalProcessed := 0
+	totalFailed := 0
+	totalSources := 0
+
+	// Process sourcemap URLs
+	for idx, sourceURL := range conf.urls {
+		log.Printf("\n[*] Processing sourcemap %d/%d: %s\n", idx+1, len(conf.urls), sourceURL)
+
+		// Create subdirectory for this sourcemap if multiple URLs
+		outputDir := conf.outdir
+		if len(conf.urls) > 1 || len(conf.jsurls) > 0 {
+			outputDir = filepath.Join(conf.outdir, filepath.Clean(strings.ReplaceAll(filepath.Base(sourceURL), ".", "_")))
+		}
+
+		sm, err := getSourceMap(sourceURL, conf.headers, conf.insecure, proxyURL)
+		if err != nil {
+			log.Printf("[!] Failed to retrieve sourcemap from %s: %v\n", sourceURL, err)
+			totalFailed++
+			continue
+		}
+
+		processed, err := processSourceMap(sm, outputDir)
+		if err != nil {
+			log.Printf("[!] Failed to process sourcemap from %s: %v\n", sourceURL, err)
+			totalFailed++
+			continue
+		}
+
+		totalProcessed += processed
+		totalSources++
+	}
+
+	// Process JavaScript URLs
+	for idx, jsURL := range conf.jsurls {
+		log.Printf("\n[*] Processing JavaScript %d/%d: %s\n", idx+1, len(conf.jsurls), jsURL)
+
+		// Create subdirectory for this sourcemap if multiple URLs
+		outputDir := conf.outdir
+		if len(conf.jsurls) > 1 || len(conf.urls) > 0 {
+			outputDir = filepath.Join(conf.outdir, filepath.Clean(strings.ReplaceAll(filepath.Base(jsURL), ".", "_")))
+		}
+
+		sm, err := getSourceMapFromJS(jsURL, conf.headers, conf.insecure, proxyURL)
+		if err != nil {
+			log.Printf("[!] Failed to retrieve sourcemap from %s: %v\n", jsURL, err)
+			totalFailed++
+			continue
+		}
+
+		processed, err := processSourceMap(sm, outputDir)
+		if err != nil {
+			log.Printf("[!] Failed to process sourcemap from %s: %v\n", jsURL, err)
+			totalFailed++
+			continue
+		}
+
+		totalProcessed += processed
+		totalSources++
+	}
+
+	log.Println("\n" + strings.Repeat("=", 60))
+	log.Printf("[+] SUMMARY: Processed %d sourcemaps successfully, %d failed", totalSources, totalFailed)
+	log.Printf("[+] Total source files extracted: %d", totalProcessed)
 	log.Println("[+] Done")
 }
