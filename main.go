@@ -332,7 +332,7 @@ func processSourceMap(sm sourceMap, outdir string) (int, error) {
 	}
 
 	if _, err := os.Stat(outdir); os.IsNotExist(err) {
-		err = os.Mkdir(outdir, 0700)
+		err = os.MkdirAll(outdir, 0700)
 		if err != nil {
 			return 0, err
 		}
