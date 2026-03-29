@@ -478,12 +478,6 @@ func main() {
 			log.Printf("\n[*] Processing sourcemap %d/%d: %s\n", idx+1, len(opts.URLs), sourceURL)
 		}
 
-		// Create subdirectory for this sourcemap if multiple URLs
-		outputDir := opts.Output
-		if len(opts.URLs) > 1 || len(opts.JSURLs) > 0 {
-			outputDir = filepath.Join(opts.Output, filepath.Clean(strings.ReplaceAll(filepath.Base(sourceURL), ".", "_")))
-		}
-
 		sm, err := getSourceMap(sourceURL, client, headerMap)
 		if err != nil {
 			log.Printf("[!] Failed to retrieve sourcemap from %s: %v\n", sourceURL, err)
@@ -491,7 +485,7 @@ func main() {
 			continue
 		}
 
-		processed, err := processSourceMap(sm, outputDir)
+		processed, err := processSourceMap(sm, opts.Output)
 		if err != nil {
 			log.Printf("[!] Failed to process sourcemap from %s: %v\n", sourceURL, err)
 			totalFailed++
@@ -513,12 +507,6 @@ func main() {
 			log.Printf("\n[*] Processing JavaScript %d/%d: %s\n", idx+1, len(opts.JSURLs), jsURL)
 		}
 
-		// Create subdirectory for this sourcemap if multiple URLs
-		outputDir := opts.Output
-		if len(opts.JSURLs) > 1 || len(opts.URLs) > 0 {
-			outputDir = filepath.Join(opts.Output, filepath.Clean(strings.ReplaceAll(filepath.Base(jsURL), ".", "_")))
-		}
-
 		sm, err := getSourceMapFromJS(jsURL, client, headerMap)
 		if err != nil {
 			log.Printf("[!] Failed to retrieve sourcemap from %s: %v\n", jsURL, err)
@@ -526,7 +514,7 @@ func main() {
 			continue
 		}
 
-		processed, err := processSourceMap(sm, outputDir)
+		processed, err := processSourceMap(sm, opts.Output)
 		if err != nil {
 			log.Printf("[!] Failed to process sourcemap from %s: %v\n", jsURL, err)
 			totalFailed++
