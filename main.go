@@ -341,15 +341,18 @@ func processSourceMap(sm sourceMap, outdir string) (int, error) {
 	processedCount := 0
 	for i := 0; i < maxEntries; i++ {
 		sourcePath := sm.Sources[i]
-		sourcePath = "/" + sourcePath // path.Clean will ignore a leading '..', must be a '/..'
 
-		// If on windows, clean the sourcepath.
+		// Remove leading slashes and clean path
+		sourcePath = strings.TrimPrefix(sourcePath, "/")
+		sourcePath = filepath.Clean(sourcePath)
+
+		// If on windows, clean the sourcepath
 		if runtime.GOOS == "windows" {
 			sourcePath = cleanWindows(sourcePath)
 		}
 
-		// Use filepath.Join. https://parsiya.net/blog/2019-03-09-path.join-considered-harmful/
-		scriptPath := filepath.Join(outdir, filepath.Clean(sourcePath))
+		// Join with output directory
+		scriptPath := filepath.Join(outdir, sourcePath)
 		scriptData := sm.SourcesContent[i]
 
 		err := writeFile(scriptPath, scriptData)
