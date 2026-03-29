@@ -342,11 +342,14 @@ func processSourceMap(sm sourceMap, outdir string) (int, error) {
 	for i := 0; i < maxEntries; i++ {
 		sourcePath := sm.Sources[i]
 
+		// Sanitize path (remove/replace invalid characters like | : ? * etc)
+		sourcePath = sanitizePath(sourcePath)
+
 		// Remove leading slashes and clean path
 		sourcePath = strings.TrimPrefix(sourcePath, "/")
 		sourcePath = filepath.Clean(sourcePath)
 
-		// If on windows, clean the sourcepath
+		// If on windows, additional cleaning
 		if runtime.GOOS == "windows" {
 			sourcePath = cleanWindows(sourcePath)
 		}
@@ -371,6 +374,19 @@ func processSourceMap(sm sourceMap, outdir string) (int, error) {
 func cleanWindows(p string) string {
 	m1 := regexp.MustCompile(`[?%*|:"<>]`)
 	return m1.ReplaceAllString(p, "")
+}
+
+// sanitizePath removes or replaces invalid characters from path
+func sanitizePath(p string) string {
+	// Replace pipe characters and other problematic chars
+	p = strings.ReplaceAll(p, "|", "_")
+	p = strings.ReplaceAll(p, ":", "_")
+	p = strings.ReplaceAll(p, "?", "_")
+	p = strings.ReplaceAll(p, "*", "_")
+	p = strings.ReplaceAll(p, "\"", "_")
+	p = strings.ReplaceAll(p, "<", "_")
+	p = strings.ReplaceAll(p, ">", "_")
+	return p
 }
 
 func main() {
