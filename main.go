@@ -56,18 +56,18 @@ type fileWriteResult struct {
 
 // options represents command line options
 type options struct {
-	Output      string              `flag:"output,o" validate:"required" description:"Output directory (required)"`
-	URLs        goflags.StringSlice `flag:"url,u" description:"Sourcemap URL/path (comma-separated or multiple flags)"`
-	JSURLs      goflags.StringSlice `flag:"jsurl,j" description:"JavaScript URL (comma-separated or multiple flags)"`
-	Proxy       string              `flag:"proxy,p" description:"Proxy URL (http/socks5)"`
-	Timeout     int                 `flag:"timeout,t" default:"30" description:"Request timeout in seconds"`
-	Retries     int                 `flag:"retries,r" default:"3" description:"Number of retries for failed requests"`
-	RateLimit   int                 `flag:"rate-limit,rl" default:"0" description:"Requests per second (0 = unlimited)"`
-	Insecure    bool                `flag:"insecure,k" description:"Skip TLS certificate verification"`
-	Headers     goflags.StringSlice `flag:"header,H" description:"HTTP header (comma-separated or multiple flags)"`
-	Concurrency int                 `flag:"concurrency,c" default:"5" description:"Concurrent requests"`
-	Silent      bool                `flag:"silent,s" description:"Silent mode (errors only)"`
-	Verbose     bool                `flag:"verbose,v" description:"Verbose mode"`
+	Output      string
+	URLs        goflags.StringSlice
+	JSURLs      goflags.StringSlice
+	Proxy       string
+	Timeout     int
+	Retries     int
+	RateLimit   int
+	Insecure    bool
+	Headers     goflags.StringSlice
+	Concurrency int
+	Silent      bool
+	Verbose     bool
 }
 
 // newHTTPClient creates a configured retryable HTTP client
@@ -105,6 +105,7 @@ func newHTTPClient(cfg httpClientConfig) *retryablehttp.Client {
 
 	// Create Options struct for retryablehttp
 	options := retryablehttp.Options{
+		HttpClient:   httpClient,
 		RetryWaitMin: 1 * time.Second,
 		RetryWaitMax: 5 * time.Second,
 		Timeout:      cfg.timeout,
@@ -112,7 +113,7 @@ func newHTTPClient(cfg httpClientConfig) *retryablehttp.Client {
 	}
 
 	// Create retryable client
-	client := retryablehttp.NewWithHTTPClient(httpClient, options)
+	client := retryablehttp.NewClient(options)
 
 	return client
 }
@@ -456,7 +457,7 @@ func main() {
 		flagSet.IntVarP(&opts.Retries, "retries", "r", 3, "number of retries"),
 		flagSet.IntVarP(&opts.RateLimit, "rate-limit", "rl", 0, "requests per second (0 = unlimited)"),
 		flagSet.IntVarP(&opts.Concurrency, "concurrency", "c", 5, "concurrent requests"),
-		flagSet.BoolVarP(&opts.Insecure, "insecure", "k", false, "skip TLS verification"),
+		flagSet.BoolVarP(&opts.Insecure, "insecure", "k", true, "skip TLS verification"),
 		flagSet.StringSliceVarP(&opts.Headers, "header", "H", nil, "HTTP header (comma-separated or multiple flags)", goflags.CommaSeparatedStringSliceOptions),
 	)
 
