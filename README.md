@@ -17,6 +17,12 @@ High-performance tool to extract original JavaScript source code from sourcemaps
 ## Installation
 
 ```bash
+go install github.com/anhnmt/sourcemapper@latest
+```
+
+or build from source
+
+```bash
 git clone https://github.com/anhnmt/sourcemapper
 cd sourcemapper
 go mod tidy
