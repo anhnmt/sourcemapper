@@ -41,6 +41,19 @@ type httpClientConfig struct {
 	maxRedirs    int
 }
 
+// fileWriteJob represents a file write task
+type fileWriteJob struct {
+	path string
+	data string
+}
+
+// fileWriteResult represents the result of a file write operation
+type fileWriteResult struct {
+	path    string
+	success bool
+	err     error
+}
+
 // options represents command line options
 type options struct {
 	Output      string              `flag:"output,o" validate:"required" description:"Output directory (required)"`
@@ -302,8 +315,20 @@ func writeFile(p string, content string) error {
 	return os.WriteFile(p, []byte(content), 0600)
 }
 
+// fileWriter is a worker that processes file write jobs
+func fileWriter(jobs <-chan fileWriteJob, results chan<- fileWriteResult) {
+	for job := range jobs {
+		err := writeFile(job.path, job.data)
+		results <- fileWriteResult{
+			path:    job.path,
+			success: err == nil,
+			err:     err,
+		}
+	}
+}
+
 // processSourceMap extracts and writes source files from a sourcemap
-func processSourceMap(sm sourceMap, outdir string) (int, error) {
+func processSourceMap(sm sourceMap, outdir string, concurrency int, verbose bool) (int, error) {
 	log.Printf("[+] Retrieved Sourcemap with version %d, containing %d entries.\n", sm.Version, len(sm.Sources))
 
 	if len(sm.Sources) == 0 {
@@ -338,31 +363,52 @@ func processSourceMap(sm sourceMap, outdir string) (int, error) {
 		}
 	}
 
+	// Create channels for worker pool
+	jobs := make(chan fileWriteJob, maxEntries)
+	results := make(chan fileWriteResult, maxEntries)
+
+	// Start workers
+	for w := 0; w < concurrency; w++ {
+		go fileWriter(jobs, results)
+	}
+
+	// Send jobs
+	go func() {
+		for i := 0; i < maxEntries; i++ {
+			sourcePath := sm.Sources[i]
+
+			// Sanitize path (remove/replace invalid characters like | : ? * etc)
+			sourcePath = sanitizePath(sourcePath)
+
+			// Remove leading slashes and clean path
+			sourcePath = strings.TrimPrefix(sourcePath, "/")
+			sourcePath = filepath.Clean(sourcePath)
+
+			// If on windows, additional cleaning
+			if runtime.GOOS == "windows" {
+				sourcePath = cleanWindows(sourcePath)
+			}
+
+			// Join with output directory
+			scriptPath := filepath.Join(outdir, sourcePath)
+			scriptData := sm.SourcesContent[i]
+
+			jobs <- fileWriteJob{
+				path: scriptPath,
+				data: scriptData,
+			}
+		}
+		close(jobs)
+	}()
+
+	// Collect results
 	processedCount := 0
 	for i := 0; i < maxEntries; i++ {
-		sourcePath := sm.Sources[i]
-
-		// Sanitize path (remove/replace invalid characters like | : ? * etc)
-		sourcePath = sanitizePath(sourcePath)
-
-		// Remove leading slashes and clean path
-		sourcePath = strings.TrimPrefix(sourcePath, "/")
-		sourcePath = filepath.Clean(sourcePath)
-
-		// If on windows, additional cleaning
-		if runtime.GOOS == "windows" {
-			sourcePath = cleanWindows(sourcePath)
-		}
-
-		// Join with output directory
-		scriptPath := filepath.Join(outdir, sourcePath)
-		scriptData := sm.SourcesContent[i]
-
-		err := writeFile(scriptPath, scriptData)
-		if err != nil {
-			log.Printf("[!] Error writing %s file: %s", scriptPath, err)
-		} else {
+		result := <-results
+		if result.success {
 			processedCount++
+		} else {
+			log.Printf("[!] Error writing %s file: %s", result.path, result.err)
 		}
 	}
 
@@ -504,7 +550,7 @@ func main() {
 			continue
 		}
 
-		processed, err := processSourceMap(sm, opts.Output)
+		processed, err := processSourceMap(sm, opts.Output, opts.Concurrency, opts.Verbose)
 		if err != nil {
 			log.Printf("[!] Failed to process sourcemap from %s: %v\n", sourceURL, err)
 			totalFailed++
@@ -533,7 +579,7 @@ func main() {
 			continue
 		}
 
-		processed, err := processSourceMap(sm, opts.Output)
+		processed, err := processSourceMap(sm, opts.Output, opts.Concurrency, opts.Verbose)
 		if err != nil {
 			log.Printf("[!] Failed to process sourcemap from %s: %v\n", jsURL, err)
 			totalFailed++
