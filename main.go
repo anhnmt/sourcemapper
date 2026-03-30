@@ -57,8 +57,8 @@ type fileWriteResult struct {
 // options represents command line options
 type options struct {
 	Output      string
-	URLs        goflags.StringSlice
-	JSURLs      goflags.StringSlice
+	URLs        goflags.StringSlice // Auto-detect .map or .js
+	List        string              // File containing URLs (auto-detect .map or .js)
 	Proxy       string
 	Timeout     int
 	Retries     int
@@ -436,6 +436,72 @@ func sanitizePath(p string) string {
 	return p
 }
 
+// readURLsFromFile reads URLs from file and categorizes them
+func readURLsFromFile(filename string) (mapURLs []string, jsURLs []string, err error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Auto-detect based on extension or pattern
+		if strings.HasSuffix(line, ".map") || strings.Contains(line, ".map?") {
+			// Sourcemap URL
+			mapURLs = append(mapURLs, line)
+		} else if strings.HasSuffix(line, ".js") || strings.Contains(line, ".js?") {
+			// JavaScript URL
+			jsURLs = append(jsURLs, line)
+		} else {
+			// Unknown, try to detect from URL pattern
+			if strings.Contains(line, "sourceMappingURL") || strings.Contains(line, "sourceMap") {
+				mapURLs = append(mapURLs, line)
+			} else {
+				// Default to JS
+				jsURLs = append(jsURLs, line)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return mapURLs, jsURLs, nil
+}
+
+// categorizeURLs splits URLs into sourcemap and JavaScript URLs
+func categorizeURLs(urls []string) (mapURLs []string, jsURLs []string) {
+	for _, u := range urls {
+		// Auto-detect based on extension or pattern
+		if strings.HasSuffix(u, ".map") || strings.Contains(u, ".map?") {
+			mapURLs = append(mapURLs, u)
+		} else if strings.HasSuffix(u, ".js") || strings.Contains(u, ".js?") {
+			jsURLs = append(jsURLs, u)
+		} else {
+			// Unknown, try to detect from URL pattern
+			if strings.Contains(u, "sourceMappingURL") || strings.Contains(u, "sourceMap") {
+				mapURLs = append(mapURLs, u)
+			} else {
+				// Default to JS
+				jsURLs = append(jsURLs, u)
+			}
+		}
+	}
+	return mapURLs, jsURLs
+}
+
 func main() {
 	opts := &options{}
 
@@ -443,8 +509,8 @@ func main() {
 	flagSet.SetDescription("Extract source code from JavaScript sourcemaps")
 
 	flagSet.CreateGroup("input", "Input",
-		flagSet.StringSliceVarP(&opts.URLs, "url", "u", nil, "sourcemap URL/path (comma-separated or multiple flags)", goflags.CommaSeparatedStringSliceOptions),
-		flagSet.StringSliceVarP(&opts.JSURLs, "jsurl", "j", nil, "javascript URL (comma-separated or multiple flags)", goflags.CommaSeparatedStringSliceOptions),
+		flagSet.StringSliceVarP(&opts.URLs, "url", "u", nil, "URL/path (auto-detects .map or .js, comma-separated)", goflags.CommaSeparatedStringSliceOptions),
+		flagSet.StringVarP(&opts.List, "list", "l", "", "file containing URLs (auto-detects .map or .js)"),
 	)
 
 	flagSet.CreateGroup("output", "Output",
@@ -475,12 +541,32 @@ func main() {
 		log.Fatal("output directory is required")
 	}
 
-	if len(opts.URLs) == 0 && len(opts.JSURLs) == 0 {
-		log.Fatal("at least one -url or -jsurl is required")
+	// Read URLs from file if provided
+	if opts.List != "" {
+		mapURLs, jsURLs, err := readURLsFromFile(opts.List)
+		if err != nil {
+			log.Fatalf("Error reading URLs from file: %v", err)
+		}
+
+		// Append to existing URLs
+		opts.URLs = append(opts.URLs, mapURLs...)
+		opts.URLs = append(opts.URLs, jsURLs...)
+
+		if !opts.Silent {
+			log.Printf("[+] Loaded %d URLs from %s (%d sourcemaps, %d JavaScript)\n",
+				len(mapURLs)+len(jsURLs), opts.List, len(mapURLs), len(jsURLs))
+		}
 	}
 
-	if len(opts.JSURLs) > 0 && len(opts.URLs) > 0 {
-		log.Println("[!] Both -jsurl and -url supplied - processing both")
+	if len(opts.URLs) == 0 {
+		log.Fatal("at least one -url or -list is required")
+	}
+
+	// Auto-categorize URLs into sourcemaps and JavaScript
+	mapURLs, jsURLs := categorizeURLs(opts.URLs)
+
+	if !opts.Silent && (len(mapURLs) > 0 || len(jsURLs) > 0) {
+		log.Printf("[+] Auto-detected: %d sourcemap URLs, %d JavaScript URLs\n", len(mapURLs), len(jsURLs))
 	}
 
 	// Parse proxy URL
@@ -534,14 +620,14 @@ func main() {
 	}
 
 	// Process sourcemap URLs
-	for idx, sourceURL := range opts.URLs {
+	for idx, sourceURL := range mapURLs {
 		// Rate limiting
 		if rateLimiter != nil {
 			<-rateLimiter
 		}
 
 		if !opts.Silent {
-			log.Printf("\n[*] Processing sourcemap %d/%d: %s\n", idx+1, len(opts.URLs), sourceURL)
+			log.Printf("\n[*] Processing sourcemap %d/%d: %s\n", idx+1, len(mapURLs), sourceURL)
 		}
 
 		sm, err := getSourceMap(sourceURL, client, headerMap)
@@ -563,14 +649,14 @@ func main() {
 	}
 
 	// Process JavaScript URLs
-	for idx, jsURL := range opts.JSURLs {
+	for idx, jsURL := range jsURLs {
 		// Rate limiting
 		if rateLimiter != nil {
 			<-rateLimiter
 		}
 
 		if !opts.Silent {
-			log.Printf("\n[*] Processing JavaScript %d/%d: %s\n", idx+1, len(opts.JSURLs), jsURL)
+			log.Printf("\n[*] Processing JavaScript %d/%d: %s\n", idx+1, len(jsURLs), jsURL)
 		}
 
 		sm, err := getSourceMapFromJS(jsURL, client, headerMap)
