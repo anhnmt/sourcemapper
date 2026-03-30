@@ -59,6 +59,7 @@ type options struct {
 	Output      string
 	URLs        goflags.StringSlice // Auto-detect .map or .js
 	List        string              // File containing URLs (auto-detect .map or .js)
+	Stdin       bool                // Read URLs from stdin for pipeline
 	Proxy       string
 	Timeout     int
 	Retries     int
@@ -502,6 +503,44 @@ func categorizeURLs(urls []string) (mapURLs []string, jsURLs []string) {
 	return mapURLs, jsURLs
 }
 
+// readURLsFromStdin reads URLs from stdin for pipeline integration
+func readURLsFromStdin() ([]string, error) {
+	var urls []string
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		urls = append(urls, line)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return urls, nil
+}
+
+// deduplicateURLs removes duplicate URLs while preserving order
+func deduplicateURLs(urls []string) []string {
+	seen := make(map[string]bool)
+	var unique []string
+
+	for _, url := range urls {
+		if !seen[url] {
+			seen[url] = true
+			unique = append(unique, url)
+		}
+	}
+
+	return unique
+}
+
 func main() {
 	opts := &options{}
 
@@ -511,6 +550,7 @@ func main() {
 	flagSet.CreateGroup("input", "Input",
 		flagSet.StringSliceVarP(&opts.URLs, "url", "u", nil, "URL/path (auto-detects .map or .js, comma-separated)", goflags.CommaSeparatedStringSliceOptions),
 		flagSet.StringVarP(&opts.List, "list", "l", "", "file containing URLs (auto-detects .map or .js)"),
+		flagSet.BoolVar(&opts.Stdin, "stdin", false, "read URLs from stdin (for pipeline)"),
 	)
 
 	flagSet.CreateGroup("output", "Output",
@@ -541,6 +581,20 @@ func main() {
 		log.Fatal("output directory is required")
 	}
 
+	// Read URLs from stdin if enabled
+	if opts.Stdin {
+		stdinURLs, err := readURLsFromStdin()
+		if err != nil {
+			log.Fatalf("Error reading URLs from stdin: %v", err)
+		}
+
+		opts.URLs = append(opts.URLs, stdinURLs...)
+
+		if !opts.Silent && len(stdinURLs) > 0 {
+			log.Printf("[+] Loaded %d URLs from stdin\n", len(stdinURLs))
+		}
+	}
+
 	// Read URLs from file if provided
 	if opts.List != "" {
 		mapURLs, jsURLs, err := readURLsFromFile(opts.List)
@@ -559,7 +613,14 @@ func main() {
 	}
 
 	if len(opts.URLs) == 0 {
-		log.Fatal("at least one -url or -list is required")
+		log.Fatal("at least one -url, -list, or -stdin is required")
+	}
+
+	// Deduplicate URLs
+	originalCount := len(opts.URLs)
+	opts.URLs = deduplicateURLs(opts.URLs)
+	if !opts.Silent && originalCount != len(opts.URLs) {
+		log.Printf("[+] Removed %d duplicate URLs\n", originalCount-len(opts.URLs))
 	}
 
 	// Auto-categorize URLs into sourcemaps and JavaScript
